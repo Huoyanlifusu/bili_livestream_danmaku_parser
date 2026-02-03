@@ -11,7 +11,9 @@ def singleton(cls):
     def get_instance(*args, **kwargs):
         if cls not in instances:
             instances[cls] = cls(*args, **kwargs)
+
         return instances[cls]
+
     return get_instance
 
 @singleton
@@ -19,14 +21,16 @@ class keyboardToucher():
     def receive_command(self, button):
         if button not in pressMap:
             logger.pr_error(f"Received undefined button type {button}")
+
         if not pressMap[button]:
             logger.pr_info(f"Pressing button {button}")
             keyboard.press_and_release(button)
             return
+
     def monitor(self):
         while not g_cmdlist.isEmpty():
-            time, cmdtext, uid = g_cmdlist.pop()
-            userNode.remove_comment(uid, time)
+            _, cmdtext, uid = g_cmdlist.pop()
+            userNode.remove_comment(uid)
             self.receive_command(keyboardMap[cmdtext])
         
 
@@ -35,15 +39,16 @@ class commandList():
     def __init__(self):
         self.command_list = []
 
-    def isEmpty(self):
+    def isEmpty(self) -> bool:
         return self.command_list == []
 
     def push(self, item):
         heappush(self.command_list, item)
 
-    def pop(self):
+    def pop(self) -> tuple:
         if self.command_list == []:
             return None
+
         return heappop(self.command_list)
 
 
@@ -56,40 +61,33 @@ class userNode():
         cls.g_node_ht[uid]['textnum'] = 0
 
     @classmethod
-    def check_limit(cls, uid):
+    def check_limit(cls, uid) -> bool:
         if uid not in cls.g_node_ht:
             cls.create_node(uid)
+
         if cls.g_node_ht[uid]['textnum'] >= usrCommLimit:
             return False
+
         return True
 
     @classmethod
-    def check_dup_comment(cls, uid, time):
-        if str(time) in cls.g_node_ht[uid]:
-            return False
-        return True
-
-    @classmethod
-    def add_comment(cls, uid, text, time):
+    def add_comment(cls, uid):
         cls.g_node_ht[uid]['textnum'] += 1
-        cls.g_node_ht[uid][str(time)] = text
 
     @classmethod
-    def remove_comment(cls, uid, time):
-        if str(time) in cls.g_node_ht[uid]:
-            del cls.g_node_ht[uid][str(time)]
-            cls.g_node_ht[uid]['textnum'] -= 1
+    def remove_comment(cls, uid):
+        cls.g_node_ht[uid]['textnum'] -= 1
 
     @classmethod
-    def filter(cls, text):
+    def filter(cls, text) -> str:
         f_text = re.sub("[a-zA-Z]", "", text)
         if f_text not in keyboardMap:
             return ""
+
         return f_text
 
 g_kbtoucer = keyboardToucher()
 g_cmdlist = commandList()
-last_time = 0
 
 @staticmethod
 def process_time(time):
@@ -97,14 +95,17 @@ def process_time(time):
     hms = [int(x) for x in time.split(" ")[1].split(":")]
     if len(ymd) != 3 or len(hms) != 3:
         return -1
+
     ymd = (ymd[0] - curyear) * ytd + ymd[1] * mtd + ymd[2]
     hms = hms[0] * hts + hms[1] * mts + hms[2]
+
     return (ymd << 17) | (hms & 0x1ffff)
 
 def add_comment(command):
     uid = command.uid
     text = command.text
     time = command.time
+
     if not userNode.check_limit(uid):
         logger.pr_debug(f"uid {uid} has reached limits")
         return
@@ -118,23 +119,14 @@ def add_comment(command):
     if processed_time == -1:
         logger.pr_error(f"Invalid time format: {time}")
         return
-    elif processed_time < userNode.g_last_time:
-        logger.pr_debug(f"uid {uid} has old comment {text}")
-        return
 
-    if processed_time > userNode.g_last_time:
-        userNode.g_last_time = processed_time
-    if not userNode.check_dup_comment(uid, processed_time):
-        logger.pr_debug(f"uid {uid} has duplicated comment {text}")
-        return
     logger.pr_info(f"Accepted command {f_text} from uid {uid} at time {time}")
-    userNode.add_comment(uid, f_text, processed_time)
+    userNode.add_comment(uid)
     g_cmdlist.push((processed_time, f_text, uid))
 
 def cmd_analyze():
     while True:
-        g_kbtoucer.monitor()
-        sleep()
+        cmd_analyze_debug()
 
 def cmd_analyze_debug():
     g_kbtoucer.monitor()
