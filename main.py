@@ -1,5 +1,6 @@
 import requests
-from util import baseUrl, headers, data, sleep
+from util import baseUrl, webUrl, roomUrl, headers, params, data
+from util import sleep
 from node import add_comment, cmd_analyze, cmd_analyze_debug
 from log  import logger
 import threading
@@ -42,10 +43,36 @@ def catch_live_comment_html(url, headers, data):
     html = requests.post(url=url, headers=headers, data=data)
     if html.status_code != 200:
         logger.pr_error(f"HTTP request failed towards {url} with status code {html.status_code}")
-        logger.pr_debug(f"Response content: {html.text}")
         return None
 
     return html
+
+def catch_room_id(url, headers, params):
+    try:
+        html = requests.get(url=url, params=params, headers=headers)
+    except requests.RequestException as e:
+        logger.pr_error(f"HTTP request exception towards {url}: {e}")
+        return -1
+    if html.status_code != 200:
+        logger.pr_error(f"HTTP request failed towards {url} with status code {html.status_code}")
+        return -1
+    logger.pr_info("successfully fetched room_id from {url}")
+    return html.json().get('data', {}).get('room_id', -1)
+
+
+@staticmethod
+def access_bili_websocket_html(url, headers, params):
+    try:
+        html = requests.get(url=url, params=params, headers=headers)
+    except requests.RequestException as e:
+        logger.pr_error(f"HTTP request exception towards {url}: {e}")
+        return None
+
+    if html.status_code != 200:
+        logger.pr_error(f"HTTP request failed towards {url} with status code {html.status_code}")
+        return None
+    logger.pr_info(f"successfully accessed websocket info from {url}")
+    return html.json()
 
 def catch_with_https():
     while True:
@@ -75,17 +102,27 @@ def catch_with_https_debug():
 
     sleep()
 
-if __name__ == "__main__":
-    thread_c = threading.Thread(target=catch_with_https, daemon=True)
-    thread_m = threading.Thread(target=cmd_analyze, daemon=True)
-
-    thread_c.start()
-    thread_m.start()
-
-    thread_c.join()
-    thread_m.join()
-
-    # Dbg mode
+def debug_mode():
+    rmid = catch_room_id(roomUrl, headers, params)
+    if rmid == -1:
+        logger.pr_error("Failed to fetch room id")
+        exit(-1)
+    logger.pr_info(f"Fetched room id: {rmid}")
+    html = access_bili_websocket_html(webUrl, headers, params)
+    logger.pr_info(html)
     # catch_with_https_debug()
     # cmd_analyze_debug()
+
+if __name__ == "__main__":
+    # thread_c = threading.Thread(target=catch_with_https, daemon=True)
+    # thread_m = threading.Thread(target=cmd_analyze, daemon=True)
+
+    # thread_c.start()
+    # thread_m.start()
+
+    # thread_c.join()
+    # thread_m.join()
+
+    # Dbg mode
+    debug_mode()
 
