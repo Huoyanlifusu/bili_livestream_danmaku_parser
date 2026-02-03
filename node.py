@@ -1,4 +1,5 @@
 from util import usrCommLimit, keyboardMap, sleep, pressMap
+from util import ytd, mtd, hts, mts, curyear
 from heapq import heappush, heappop
 import re
 from collections import defaultdict
@@ -19,11 +20,13 @@ class keyboardToucher():
         if button not in pressMap:
             logger.pr_error(f"Received undefined button type {button}")
         if not pressMap[button]:
+            logger.pr_info(f"Pressing button {button}")
             keyboard.press_and_release(button)
             return
     def monitor(self):
-        while not g_cmdlist.isEmpty:
-            _, cmdtext = g_cmdlist.pop()
+        while not g_cmdlist.isEmpty():
+            time, cmdtext, uid = g_cmdlist.pop()
+            userNode.remove_comment(uid, time)
             self.receive_command(keyboardMap[cmdtext])
         
 
@@ -45,41 +48,58 @@ class commandList():
 
 
 class userNode():
-    g_node_ht = defaultdict(int)
-    def __init__(self, uid):
-        self.uid = uid
+    g_node_ht = defaultdict(dict)
+    g_last_time = 0
 
     @classmethod
     def create_node(cls, uid):
-        cls.g_node_ht[uid] = 0
+        cls.g_node_ht[uid]['textnum'] = 0
 
     @classmethod
     def check_limit(cls, uid):
         if uid not in cls.g_node_ht:
             cls.create_node(uid)
-        if cls.g_node_ht[uid] >= usrCommLimit:
+        if cls.g_node_ht[uid]['textnum'] >= usrCommLimit:
             return False
-        cls.g_node_ht[uid] += 1
         return True
 
-    def filter(self, text):
+    @classmethod
+    def check_dup_comment(cls, uid, time):
+        if str(time) in cls.g_node_ht[uid]:
+            return False
+        return True
+
+    @classmethod
+    def add_comment(cls, uid, text, time):
+        cls.g_node_ht[uid]['textnum'] += 1
+        cls.g_node_ht[uid][str(time)] = text
+
+    @classmethod
+    def remove_comment(cls, uid, time):
+        if str(time) in cls.g_node_ht[uid]:
+            del cls.g_node_ht[uid][str(time)]
+            cls.g_node_ht[uid]['textnum'] -= 1
+
+    @classmethod
+    def filter(cls, text):
         f_text = re.sub("[a-zA-Z]", "", text)
-        if f_text in keyboardMap:
-            print(f_text)
-            return True
-        return False
+        if f_text not in keyboardMap:
+            return ""
+        return f_text
 
 g_kbtoucer = keyboardToucher()
 g_cmdlist = commandList()
-
-def cmd_analyze():
-    while True:
-        g_kbtoucer.monitor()
-        sleep()
+last_time = 0
 
 @staticmethod
 def process_time(time):
-    return int("".join(time.split(" ")[0].split("-"))) << 20 + int("".join(time.split(" ")[1].split(":"))) & 0xfffff
+    ymd = [int(x) for x in time.split(" ")[0].split("-")]
+    hms = [int(x) for x in time.split(" ")[1].split(":")]
+    if len(ymd) != 3 or len(hms) != 3:
+        return -1
+    ymd = (ymd[0] - curyear) * ytd + ymd[1] * mtd + ymd[2]
+    hms = hms[0] * hts + hms[1] * mts + hms[2]
+    return (ymd << 17) | (hms & 0x1ffff)
 
 def add_comment(command):
     uid = command.uid
@@ -87,7 +107,35 @@ def add_comment(command):
     time = command.time
     if not userNode.check_limit(uid):
         logger.pr_debug(f"uid {uid} has reached limits")
-    node = userNode(uid)
-    if node.filter(text):
-        processed_time = process_time(time)
-        g_cmdlist.push((processed_time, text))
+        return
+
+    f_text = userNode.filter(text)
+    if f_text == "":
+        logger.pr_debug(f"uid {uid} has filtered out text {text}")
+        return
+
+    processed_time = process_time(time)
+    if processed_time == -1:
+        logger.pr_error(f"Invalid time format: {time}")
+        return
+    elif processed_time < userNode.g_last_time:
+        logger.pr_debug(f"uid {uid} has old comment {text}")
+        return
+
+    if processed_time > userNode.g_last_time:
+        userNode.g_last_time = processed_time
+    if not userNode.check_dup_comment(uid, processed_time):
+        logger.pr_debug(f"uid {uid} has duplicated comment {text}")
+        return
+    logger.pr_info(f"Accepted command {f_text} from uid {uid} at time {time}")
+    userNode.add_comment(uid, f_text, processed_time)
+    g_cmdlist.push((processed_time, f_text, uid))
+
+def cmd_analyze():
+    while True:
+        g_kbtoucer.monitor()
+        sleep()
+
+def cmd_analyze_debug():
+    g_kbtoucer.monitor()
+    sleep()

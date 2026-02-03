@@ -3,7 +3,7 @@ import logging
 class Logger:
     def __init__(self):
         logging.basicConfig(
-            level=logging.INFO, # 输出 INFO 及以上级别
+            level=logging.DEBUG, # 输出 DEBUG 及以上级别
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
             filename="bili_capcmdtokb_info.log", # 输出到文件
