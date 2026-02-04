@@ -1,8 +1,8 @@
 import requests
-from util import baseUrl, webUrl, roomUrl, headers, params, data, params_dminfo, myUid
+from util import baseUrl, webUrl, roomUrl, headers, params, data, myUid
 from util import sleep
 from util import heartbeat_body
-from node import add_comment, cmd_analyze, singleton
+from node import add_comment, cmd_analyze
 from log  import logger
 import threading
 from collections import deque
@@ -10,6 +10,10 @@ import asyncio
 import json
 from proto import Proto
 import websockets
+import time
+from key import _WbiSigner
+import weakref
+import aiohttp
 
 class Command():
     def __init__(self, time, uid, text):
@@ -55,47 +59,61 @@ def catch_live_comment_html(url, headers, data):
 
     return html
 
-@singleton
+_session_to_wbi_signer = weakref.WeakKeyDictionary()
+def _get_wbi_signer(session: aiohttp.ClientSession) -> '_WbiSigner':
+    wbi_signer = _session_to_wbi_signer.get(session, None)
+    if wbi_signer is None:
+        wbi_signer = _session_to_wbi_signer[session] = _WbiSigner(session)
+    return wbi_signer
+
 class BiliStreamClient():
     def __init__(self):
         self.room_id = 0
         self.websocket = None
-        self.roomUrl = roomUrl
         self.webUrl = webUrl
-        self.roomHeaders = headers
-        self.roomParams = params
-        self.webHeaders = headers
-        self.webParams = params_dminfo
         self.heartbeat_interval = 30  # default heartbeat interval in seconds
         self.heartbeat_body = heartbeat_body
         self.token = ""
         self.hosts = []
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+        self._wbi_signer = _get_wbi_signer(self._session)
 
     async def fetch_room_id(self):
         try:
-            html = requests.get(url=self.roomUrl, params=self.roomParams, headers=self.roomHeaders)
+            html = requests.get(url=roomUrl, params=params, headers=headers)
         except requests.RequestException as e:
-            logger.pr_error(f"HTTP request exception towards {self.roomUrl}: {e}")
+            logger.pr_error(f"HTTP request exception towards {roomUrl}: {e}")
             return
         
         if html.status_code != 200:
-            logger.pr_error(f"HTTP request failed towards {self.roomUrl} with status code {html.status_code}")
+            logger.pr_error(f"HTTP request failed towards {roomUrl} with status code {html.status_code}")
             return
         
         if html.json().get('data', -1) == {}:
-            logger.pr_error(f"API returned empty data from {self.roomUrl}")
+            logger.pr_error(f"API returned empty data from {roomUrl}")
             return
         
         self.room_id = html.json().get('data', {}).get('room_id', -1)
         if self.room_id == -1:
-            logger.pr_error(f"Failed to fetch room_id from {self.roomUrl}")
+            logger.pr_error(f"Failed to fetch room_id from {roomUrl}")
             return
         
-        logger.pr_debug(f"successfully fetched room_id {self.room_id} from {self.roomUrl}")
+        logger.pr_debug(f"successfully fetched room_id {self.room_id} from {roomUrl}")
 
     async def access_bili_websocket_html(self):
+        if self._wbi_signer.need_refresh_wbi_key:
+            await self._wbi_signer.refresh_wbi_key()
+            # 如果没刷新成功先用旧的key
+            if self._wbi_signer.wbi_key == '':
+                logger.pr_error(f"room={self.room_id} _init_host_server() failed: no wbi key")
+                return
+        params = self._wbi_signer.add_wbi_sign({
+            'id': self.room_id,
+            'type': 0,
+            'web_location': "444.8"
+        })
         try:
-            html = requests.get(url=self.webUrl, params=self.webParams, headers=self.webHeaders)
+            html = requests.get(url=self.webUrl, params=params, headers=headers)
         except requests.RequestException as e:
             logger.pr_error(f"HTTP request exception towards {self.webUrl}: {e}")
             return
@@ -118,7 +136,7 @@ class BiliStreamClient():
         auth_packet.ver = 1
         auth_packet.op = 7
         auth_packet.seq = 1
-        auth_packet.body = json.dumps({
+        auth_json = json.dumps({
             "uid": myUid, 
             "roomid": self.room_id,
             "protover": 3,
@@ -130,6 +148,9 @@ class BiliStreamClient():
             "type": 2,
             "key": self.token
         })
+        auth_packet.body = auth_json
+        # 保存最近一次 auth body 以便日志记录
+        self._last_auth_body = auth_json
         packet = auth_packet.pack()
 
         return packet
@@ -147,15 +168,37 @@ class BiliStreamClient():
     async def send_heartbeat(self):
         try:
             while True:
-                heartbeat_pkt = await self.heartbeat_packet()
-                await self.websocket.send(heartbeat_pkt)
-                logger.pr_debug("Sent heartbeat packet to server")
                 await asyncio.sleep(self.heartbeat_interval)
+                if self.websocket is None:
+                    logger.pr_debug("WebSocket is None in send_heartbeat, stopping")
+                    break
+                
+                try:
+                    heartbeat_pkt = await self.heartbeat_packet()
+                    await self.websocket.send(heartbeat_pkt)
+                    logger.pr_debug("Sent heartbeat packet to server")
+                except websockets.exceptions.ConnectionClosed:
+                    logger.pr_debug("send_heartbeat: connection closed, stopping heartbeat task")
+                    break
+                except Exception as e:
+                    logger.pr_error(f"send_heartbeat: unexpected error: {e}")
+        except Exception as e:
+            logger.pr_error(f"send_heartbeat: unexpected error: {e}")
+
+    async def _send_heartbeat(self):
+        if self.websocket is None:
+            logger.pr_debug("WebSocket is None in _send_heartbeat")
+            return
+
+        try:
+            heartbeat_pkt = await self.heartbeat_packet()
+            await self.websocket.send(heartbeat_pkt)
+            logger.pr_debug("Sent heartbeat packet to server")
         except websockets.exceptions.ConnectionClosed:
             logger.pr_debug("send_heartbeat: connection closed, stopping heartbeat task")
         except Exception as e:
             logger.pr_error(f"send_heartbeat: unexpected error: {e}")
-    
+
     async def fetch_and_process_comments(self):
         try:
             while True:
@@ -167,47 +210,38 @@ class BiliStreamClient():
             logger.pr_error(f"fetch_and_process_comments: unexpected error: {e}")
 
     async def connect_to_host(self):
-        hostidx = 0
-        auth_packet = await self.build_auth_packet()
-        url = f'wss://{self.hosts[hostidx]["host"]}:{self.hosts[hostidx]["wss_port"]}/sub'
+        # 遍历返回的 host_list，逐个尝试连接并鉴权
+        while True:
+            host = self.hosts[0].get('host')
+            port = self.hosts[0].get('wss_port')
+            url = f'wss://{host}:{port}/sub'
 
-        try:
-            self.websocket = await websockets.connect(url)
-        except Exception as e:
-            logger.pr_error(f"Failed to connect to WebSocket URL {url}: {e}")
-            await self.reconnect()
-            return
+            try:
+                self.websocket = await websockets.connect(url)
+                logger.pr_info(f"Connected to WebSocket at {url}")
+                
+                # 构建并发送 auth 包
+                auth_packet = await self.build_auth_packet()
+                await self.websocket.send(auth_packet)
+                logger.pr_debug("Sent authentication packet")
+                
+                # 创建心跳和接收任务
+                hb_task = asyncio.create_task(self.send_heartbeat())
+                recv_task = asyncio.create_task(self.fetch_and_process_comments())
 
-        logger.pr_info(f"Connected to WebSocket at {url}")
-
-        try:
-            await self.websocket.send(auth_packet)
-        except Exception as e:
-            logger.pr_error(f"Failed to send auth packet: {e}")
-            await self.websocket.close()
-            await self.reconnect()
-            return
-
-        # Run receiver and heartbeat concurrently. If either finishes (error/close),
-        # cancel the other and attempt a reconnect.
-        recv_task = asyncio.create_task(self.fetch_and_process_comments())
-        hb_task = asyncio.create_task(self.send_heartbeat())
-
-        done, pending = await asyncio.wait([recv_task, hb_task], return_when=asyncio.FIRST_COMPLETED)
-
-        # Cancel any pending task(s)
-        for p in pending:
-            p.cancel()
-
-        # Close websocket if still open
-        try:
-            if self.websocket and not self.websocket.closed:
-                await self.websocket.close()
-        except Exception:
-            pass
-
-        # Attempt reconnect
-        await self.reconnect()
+                # 等待任意一个任务完成（通常是接收任务因连接关闭）
+                done, pending = await asyncio.wait([hb_task, recv_task], return_when=asyncio.FIRST_COMPLETED)
+                
+                # 取消剩余的任务
+                for task in pending:
+                    task.cancel()
+                
+                logger.pr_info("Connection lost, attempting to reconnect in 5 seconds...")
+                await asyncio.sleep(5)
+                
+            except Exception as e:
+                logger.pr_error(f"Failed to connect to WebSocket URL {url}: {e}")
+                await asyncio.sleep(5)
 
     async def reconnect(self):
         await asyncio.sleep(5)  # wait before reconnecting
@@ -242,21 +276,24 @@ def catch_with_https_debug():
 
     sleep()
 
+async def debug_mode_async():
+    bsclient = BiliStreamClient()
+
+    await bsclient.fetch_room_id()
+    if bsclient.room_id == 0 or bsclient.room_id == -1:
+        logger.pr_error("Failed to fetch valid room_id")
+        return
+
+    await bsclient.access_bili_websocket_html()
+    if not bsclient.token or not bsclient.hosts:
+        logger.pr_error("Failed to access BiliBili WebSocket info")
+        return
+
+    await bsclient.connect_to_host()
+
 def debug_mode():
     try:
-        bsclient = BiliStreamClient()
-        asyncio.run(bsclient.fetch_room_id())
-        if bsclient.room_id == 0 or bsclient.room_id == -1:
-            logger.pr_error("Failed to fetch valid room_id")
-            return
-        
-        asyncio.run(bsclient.access_bili_websocket_html())
-        if not bsclient.token or not bsclient.hosts:
-            logger.pr_error("Failed to access BiliBili WebSocket info")
-            return
-    
-        asyncio.run(bsclient.connect_to_host())
-
+        asyncio.run(debug_mode_async())
     except Exception as e:
         logger.pr_error(f"Error in debug mode: {e}")
 

@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-# https://github.com/bilibili-openplatform/demo
+# copied from bilibili demo https://github.com/bilibili-openplatform/demo
 
 import struct
 
