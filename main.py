@@ -1,5 +1,5 @@
 import requests
-from util import baseUrl, webUrl, roomUrl, headers, params, data, websocketUrl
+from util import baseUrl, webUrl, roomUrl, headers, params, data, websocketUrl, params_dminfo
 from util import sleep
 from node import add_comment, cmd_analyze, cmd_analyze_debug
 from log  import logger
@@ -132,7 +132,7 @@ async def catch_room_id(url, headers, params):
     if html.status_code != 200:
         logger.pr_error(f"HTTP request failed towards {url} with status code {html.status_code}")
         return -1
-    logger.pr_info(f"successfully fetched room_id {html.json().get('data', {}).get('room_id', -1)} from {url}")
+    logger.pr_info(f"successfully fetched room_id {html.json().get('data', {})} from {url}")
     return html.json().get('data', {}).get('room_id', -1)
 
 @staticmethod
@@ -142,16 +142,16 @@ async def access_bili_websocket_html(url, headers, params):
     except requests.RequestException as e:
         logger.pr_error(f"HTTP request exception towards {url}: {e}")
         return None
-    # Handle access denied error
-    max_retries = 5
-    while html.json().get('code') == '-443' and max_retries > 0:
-        logger.pr_info("Access denied, retrying...")
-        html = requests.get(url=url, params=params, headers=headers)
-        max_retries -= 1
 
     if html.status_code != 200:
         logger.pr_error(f"HTTP request failed towards {url} with status code {html.status_code}")
         return None
+
+    if html.json().get('code', -1) != 0:
+        logger.pr_error(f"API returned error code {html.json().get('code', -1)} from {url}")
+        logger.pr_error(f"Possible reasons for err code -352: invalid parameters or access restrictions.")
+        return None
+
     logger.pr_info(f"successfully accessed websocket info from {url}")
     return html.json()
 
@@ -189,13 +189,23 @@ def debug_mode():
         if roomid == -1:
             logger.pr_error("Failed to fetch room ID")
             return
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(BiliWebsocket(roomid).startup())
-        finally:
-            loop.close()
+        
+        json = asyncio.run(access_bili_websocket_html(webUrl, headers, params_dminfo))
+        if not json:
+            logger.pr_error("Failed to access BiliBili WebSocket info")
+            return
+        token = json.get('data', {}).get('token', '')
+        hosts = json.get('data', {}).get('host_list', [])
+        if not token or not hosts:
+            logger.pr_error("Token or host list is missing in WebSocket info")
+            return
+        logger.pr_debug(f"Fetched token: {token}\n \t\t\t hosts: {hosts}")
+        # loop = asyncio.new_event_loop()
+        # asyncio.set_event_loop(loop)
+        # try:
+        #     loop.run_until_complete(BiliWebsocket(roomid).startup())
+        # finally:
+        #     loop.close()
     except Exception as e:
         logger.pr_error(f"Error in debug mode: {e}")
 

@@ -9,12 +9,26 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
 }
 
-rmId = 22637261 # represent for bilibili stream room id
+rmId = 468200 # represent for bilibili stream room id
 rmType = 0
 params = {
     'id': rmId,
     "type": rmType
 }
+params_dminfo = {
+    "id": "468200",          # 房间ID
+    "type": "0",             # 类型标识
+    "web_location": "444.8", # 网页位置参数
+    "w_rid": "4bb45fba315da3d4a23ddb425694985b",  # 签名参数
+    "wts": "1770176148"      # 时间戳参数
+}
+# params_dminfo = {
+#     'room_id': rmId,
+#     'type': rmType,
+#     'web_location': '444.8',
+#     'w_rid': '4bb45fba315da3d4a23ddb425694985b',
+#     'wts': '1770176148'
+# }
 data = {
     'roomid': rmId,
     "room_type": rmType
