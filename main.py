@@ -1,7 +1,8 @@
 import requests
-from util import baseUrl, webUrl, roomUrl, headers, params, data, websocketUrl, params_dminfo, myUid
+from util import baseUrl, webUrl, roomUrl, headers, params, data, params_dminfo, myUid
 from util import sleep
-from node import add_comment, cmd_analyze, cmd_analyze_debug
+from util import heartbeat_body
+from node import add_comment, cmd_analyze, singleton
 from log  import logger
 import threading
 from collections import deque
@@ -52,62 +53,162 @@ def catch_live_comment_html(url, headers, data):
 
     return html
 
-@staticmethod
-async def catch_room_id(url, headers, params):
-    try:
-        html = requests.get(url=url, params=params, headers=headers)
-    except requests.RequestException as e:
-        logger.pr_error(f"HTTP request exception towards {url}: {e}")
-        return -1
-    if html.status_code != 200:
-        logger.pr_error(f"HTTP request failed towards {url} with status code {html.status_code}")
-        return -1
-    logger.pr_info(f"successfully fetched room_id {html.json().get('data', {})} from {url}")
-    return html.json().get('data', {}).get('room_id', -1)
+@singleton
+class BiliStreamClient():
+    def __init__(self):
+        self.room_id = 0
+        self.websocket = None
+        self.roomUrl = roomUrl
+        self.webUrl = webUrl
+        self.roomHeaders = headers
+        self.roomParams = params
+        self.webHeaders = headers
+        self.webParams = params_dminfo
+        self.heartbeat_interval = 30  # default heartbeat interval in seconds
+        self.heartbeat_body = heartbeat_body
+        self.token = ""
+        self.hosts = []
 
-@staticmethod
-async def access_bili_websocket_html(url, headers, params):
-    try:
-        html = requests.get(url=url, params=params, headers=headers)
-    except requests.RequestException as e:
-        logger.pr_error(f"HTTP request exception towards {url}: {e}")
-        return None
+    async def fetch_room_id(self):
+        try:
+            html = requests.get(url=self.roomUrl, params=self.roomParams, headers=self.roomHeaders)
+        except requests.RequestException as e:
+            logger.pr_error(f"HTTP request exception towards {self.roomUrl}: {e}")
+            return
+        if html.status_code != 200:
+            logger.pr_error(f"HTTP request failed towards {self.roomUrl} with status code {html.status_code}")
+            return
+        if html.json().get('data', -1) == {}:
+            logger.pr_error(f"API returned empty data from {self.roomUrl}")
+            return
+        self.room_id = html.json().get('data', {}).get('room_id', -1)
+        if self.room_id == -1:
+            logger.pr_error(f"Failed to fetch room_id from {self.roomUrl}")
+            return
+        logger.pr_debug(f"successfully fetched room_id {self.room_id} from {self.roomUrl}")
 
-    if html.status_code != 200:
-        logger.pr_error(f"HTTP request failed towards {url} with status code {html.status_code}")
-        return None
+    async def access_bili_websocket_html(self):
+        try:
+            html = requests.get(url=self.webUrl, params=self.webParams, headers=self.webHeaders)
+        except requests.RequestException as e:
+            logger.pr_error(f"HTTP request exception towards {self.webUrl}: {e}")
+            return
 
-    if html.json().get('code', -1) != 0:
-        logger.pr_error(f"API returned error code {html.json().get('code', -1)} from {url}")
-        logger.pr_error(f"Possible reasons for err code -352: invalid parameters or access restrictions.")
-        return None
+        if html.status_code != 200:
+            logger.pr_error(f"HTTP request failed towards {self.webUrl} with status code {html.status_code}")
+            return
 
-    logger.pr_info(f"successfully accessed websocket info from {url}")
-    return html.json()
+        if html.json().get('code', -1) != 0:
+            logger.pr_error(f"API returned error code {html.json().get('code', -1)} from {self.webUrl}")
+            logger.pr_error(f"Possible reasons for err code -352: invalid parameters or access restrictions.")
+            return
 
-async def connect_and_send_auth_packet(hosts, token, roomid):
-    auth_packet = Proto()
-    auth_packet.ver = 1
-    auth_packet.op = 7
-    auth_packet.seq = 1
-    auth_packet.body = json.dumps({
-        "uid": myUid, 
-        "roomid": roomid,
-        "protover": 3,
-        "buvid": "895976D6-ACF1-0AAE-93FD-335D6F10128823063infoc",
-        "support_ack": True,
-        "queue_uuid": "g0myt1hu",
-        "scene": "room",
-        "platform": "web",
-        "type": 2,
-        "key": token
-    })
-    packet = auth_packet.pack()
-    url = f'wss://{hosts[0]["host"]}:{hosts[0]["wss_port"]}/sub'
-    logger.pr_debug(f"Connecting to WebSocket URL: {url}")
-    # print(url)
-    ws = await websockets.connect(url)
-    await ws.send(packet)
+        logger.pr_debug(f"successfully accessed websocket info from {self.webUrl}")
+        self.token = html.json().get('data', {}).get('token', '')
+        self.hosts = html.json().get('data', {}).get('host_list', [])
+    
+    async def build_auth_packet(self):
+        auth_packet = Proto()
+        auth_packet.ver = 1
+        auth_packet.op = 7
+        auth_packet.seq = 1
+        auth_packet.body = json.dumps({
+            "uid": myUid, 
+            "roomid": self.room_id,
+            "protover": 3,
+            "buvid": "895976D6-ACF1-0AAE-93FD-335D6F10128823063infoc",
+            "support_ack": True,
+            "queue_uuid": "g0myt1hu",
+            "scene": "room",
+            "platform": "web",
+            "type": 2,
+            "key": self.token
+        })
+        packet = auth_packet.pack()
+        return packet
+
+    async def heartbeat_packet(self):
+        heartbeart_proto = Proto()
+        heartbeart_proto.ver = 1
+        heartbeart_proto.op = 2
+        heartbeart_proto.seq = 1
+        heartbeart_proto.body = heartbeat_body
+        packet = heartbeart_proto.pack()
+        return packet
+    
+    async def send_heartbeat(self):
+        try:
+            while True:
+                heartbeat_pkt = await self.heartbeat_packet()
+                await self.websocket.send(heartbeat_pkt)
+                logger.pr_debug("Sent heartbeat packet to server")
+                await asyncio.sleep(self.heartbeat_interval)
+        except websockets.exceptions.ConnectionClosed:
+            logger.pr_debug("send_heartbeat: connection closed, stopping heartbeat task")
+        except Exception as e:
+            logger.pr_error(f"send_heartbeat: unexpected error: {e}")
+    
+    async def fetch_and_process_comments(self):
+        try:
+            while True:
+                data = await self.websocket.recv()
+                logger.pr_debug(f"Received WebSocket data: {data}")
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.pr_info(f"fetch_and_process_comments: connection closed: {e}")
+        except Exception as e:
+            logger.pr_error(f"fetch_and_process_comments: unexpected error: {e}")
+
+    async def connect_to_host(self):
+        auth_packet = await self.build_auth_packet()
+        url = f'wss://{self.hosts[0]["host"]}:{self.hosts[0]["wss_port"]}/sub'
+
+        try:
+            self.websocket = await websockets.connect(url)
+        except Exception as e:
+            logger.pr_error(f"Failed to connect to WebSocket URL {url}: {e}")
+            await self.reconnect()
+            return
+
+        logger.pr_info(f"Connected to WebSocket at {url}")
+
+        try:
+            await self.websocket.send(auth_packet)
+        except Exception as e:
+            logger.pr_error(f"Failed to send auth packet: {e}")
+            await self.websocket.close()
+            await self.reconnect()
+            return
+
+        # Start heartbeat and receiver tasks and wait for them. If one ends, cancel the other and reconnect.
+        heartbeat_task = asyncio.create_task(self.send_heartbeat())
+        receiver_task = asyncio.create_task(self.fetch_and_process_comments())
+
+        done, pending = await asyncio.wait(
+            [heartbeat_task, receiver_task], return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # If one of the tasks finished (likely due to connection close), cancel pending tasks
+        for t in pending:
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+        # Attempt graceful close if still open
+        try:
+            if self.websocket and not self.websocket.closed:
+                await self.websocket.close(code=1000, reason='client shutdown')
+        except Exception:
+            # ignore close errors
+            pass
+
+        logger.pr_info("WebSocket connection ended, attempting reconnect")
+        await self.reconnect()
+
+    async def reconnect(self):
+        await asyncio.sleep(5)  # wait before reconnecting
+        await self.connect_to_host()
 
 def catch_with_https():
     while True:
@@ -140,36 +241,34 @@ def catch_with_https_debug():
 
 def debug_mode():
     try:
-        roomid = asyncio.run(catch_room_id(roomUrl, headers, params))
-        if roomid == -1:
-            logger.pr_error("Failed to fetch room ID")
+        bsclient = BiliStreamClient()
+        asyncio.run(bsclient.fetch_room_id())
+        if bsclient.room_id == 0 or bsclient.room_id == -1:
+            logger.pr_error("Failed to fetch valid room_id")
             return
         
-        json = asyncio.run(access_bili_websocket_html(webUrl, headers, params_dminfo))
-        if not json:
+        asyncio.run(bsclient.access_bili_websocket_html())
+        if not bsclient.token or not bsclient.hosts:
             logger.pr_error("Failed to access BiliBili WebSocket info")
             return
-        token = json.get('data', {}).get('token', '')
-        hosts = json.get('data', {}).get('host_list', [])
-        if not token or not hosts:
-            logger.pr_error("Token or host list is missing in WebSocket info")
-            return
-        logger.pr_debug(f"Fetched token: {token}\n \t\t\t hosts: {hosts}")
-        asyncio.run(connect_and_send_auth_packet(hosts, token, roomid))
+    
+        asyncio.run(bsclient.connect_to_host())
 
     except Exception as e:
         logger.pr_error(f"Error in debug mode: {e}")
 
 if __name__ == "__main__":
-    # thread_c = threading.Thread(target=catch_with_https, daemon=True)
-    # thread_m = threading.Thread(target=cmd_analyze, daemon=True)
 
-    # thread_c.start()
-    # thread_m.start()
+    if 0:
+        # https protocol
+        thread_c = threading.Thread(target=catch_with_https, daemon=True)
+        thread_m = threading.Thread(target=cmd_analyze, daemon=True)
 
-    # thread_c.join()
-    # thread_m.join()
+        thread_c.start()
+        thread_m.start()
 
-    # Dbg mode
+        thread_c.join()
+        thread_m.join()
+
+    # websocket protocol
     debug_mode()
-

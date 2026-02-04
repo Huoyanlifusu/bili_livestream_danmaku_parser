@@ -21,11 +21,9 @@ class keyboardToucher():
     def receive_command(self, button):
         if button not in pressMap:
             logger.pr_error(f"Received undefined button type {button}")
-
-        if not pressMap[button]:
-            logger.pr_info(f"Pressing button {button}")
+        elif pressMap[button] == 0:
+            logger.pr_debug(f"Pressing button {button}")
             keyboard.press_and_release(button)
-            return
 
     def monitor(self):
         while not g_cmdlist.isEmpty():
@@ -33,7 +31,6 @@ class keyboardToucher():
             userNode.remove_comment(uid)
             self.receive_command(keyboardMap[cmdtext])
         
-
 @singleton
 class commandList():
     def __init__(self):

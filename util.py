@@ -3,12 +3,11 @@ import time
 baseUrl = "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory"
 webUrl = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
 roomUrl = "https://api.live.bilibili.com/room/v1/Room/get_info"
-websocketUrl = "wss://broadcast.chat.bilibili.com/sub"
 headers = {
     'Host': 'api.live.bilibili.com',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
 }
-
+heartbeat_body = "5b6f626a656374204f626a6563745d"
 myUid = 3056211 # replace with your own Bilibili UID
 rmId = 468200 # represent for bilibili stream room id
 rmType = 0
