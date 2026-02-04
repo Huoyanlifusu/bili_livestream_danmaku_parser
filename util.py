@@ -1,5 +1,5 @@
 import time
-from collections import defaultdict
+
 baseUrl = "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory"
 webUrl = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
 roomUrl = "https://api.live.bilibili.com/room/v1/Room/get_info"
@@ -9,6 +9,7 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
 }
 
+myUid = 3056211 # replace with your own Bilibili UID
 rmId = 468200 # represent for bilibili stream room id
 rmType = 0
 params = {
@@ -33,7 +34,6 @@ data = {
     'roomid': rmId,
     "room_type": rmType
 }
-
 usrCommLimit = 10
 
 keyboardMap = {

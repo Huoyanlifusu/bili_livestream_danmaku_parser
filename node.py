@@ -1,10 +1,10 @@
 from util import usrCommLimit, keyboardMap, sleep, pressMap
 from util import ytd, mtd, hts, mts, curyear
-from heapq import heappush, heappop
-import re
-from collections import defaultdict
 from log import logger
+from heapq import heappush, heappop
+from collections import defaultdict
 import keyboard
+import re
 
 def singleton(cls):
     instances = {}
