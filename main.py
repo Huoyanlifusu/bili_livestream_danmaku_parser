@@ -132,16 +132,16 @@ class BiliStreamClient():
         heartbeart_proto.ver = 1
         heartbeart_proto.op = 2
         heartbeart_proto.seq = 1
-        heartbeart_proto.body = heartbeat_body
+        heartbeart_proto.body = '[object Object]'
         packet = heartbeart_proto.pack()
         return packet
     
     async def send_heartbeat(self):
         try:
             while True:
+                logger.pr_debug("Sent heartbeat packet to server")
                 heartbeat_pkt = await self.heartbeat_packet()
                 await self.websocket.send(heartbeat_pkt)
-                logger.pr_debug("Sent heartbeat packet to server")
                 await asyncio.sleep(self.heartbeat_interval)
         except websockets.exceptions.ConnectionClosed:
             logger.pr_debug("send_heartbeat: connection closed, stopping heartbeat task")
@@ -159,8 +159,9 @@ class BiliStreamClient():
             logger.pr_error(f"fetch_and_process_comments: unexpected error: {e}")
 
     async def connect_to_host(self):
+        hostidx = 1
         auth_packet = await self.build_auth_packet()
-        url = f'wss://{self.hosts[0]["host"]}:{self.hosts[0]["wss_port"]}/sub'
+        url = f'wss://{self.hosts[hostidx]["host"]}:{self.hosts[hostidx]["wss_port"]}/sub'
 
         try:
             self.websocket = await websockets.connect(url)
@@ -179,32 +180,10 @@ class BiliStreamClient():
             await self.reconnect()
             return
 
-        # Start heartbeat and receiver tasks and wait for them. If one ends, cancel the other and reconnect.
-        heartbeat_task = asyncio.create_task(self.send_heartbeat())
-        receiver_task = asyncio.create_task(self.fetch_and_process_comments())
+        # asyncio.create_task(self.send_heartbeat())
+        await self.websocket.send("heartbeat")
 
-        done, pending = await asyncio.wait(
-            [heartbeat_task, receiver_task], return_when=asyncio.FIRST_COMPLETED
-        )
-
-        # If one of the tasks finished (likely due to connection close), cancel pending tasks
-        for t in pending:
-            t.cancel()
-            try:
-                await t
-            except asyncio.CancelledError:
-                pass
-
-        # Attempt graceful close if still open
-        try:
-            if self.websocket and not self.websocket.closed:
-                await self.websocket.close(code=1000, reason='client shutdown')
-        except Exception:
-            # ignore close errors
-            pass
-
-        logger.pr_info("WebSocket connection ended, attempting reconnect")
-        await self.reconnect()
+        await self.fetch_and_process_comments()
 
     async def reconnect(self):
         await asyncio.sleep(5)  # wait before reconnecting
