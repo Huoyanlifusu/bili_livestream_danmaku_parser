@@ -33,12 +33,14 @@ class Deduper:
         with self.lock:
             if key in self.seen:
                 return True
+            
             # new item -> add to seen and queue, evict if necessary
             self.seen.add(key)
             self.queue.append(key)
             if len(self.queue) > self.max_size:
                 old = self.queue.popleft()
                 self.seen.discard(old)
+
             return False
 
 # customize maximum size for deduplication
@@ -75,16 +77,20 @@ class BiliStreamClient():
         except requests.RequestException as e:
             logger.pr_error(f"HTTP request exception towards {self.roomUrl}: {e}")
             return
+        
         if html.status_code != 200:
             logger.pr_error(f"HTTP request failed towards {self.roomUrl} with status code {html.status_code}")
             return
+        
         if html.json().get('data', -1) == {}:
             logger.pr_error(f"API returned empty data from {self.roomUrl}")
             return
+        
         self.room_id = html.json().get('data', {}).get('room_id', -1)
         if self.room_id == -1:
             logger.pr_error(f"Failed to fetch room_id from {self.roomUrl}")
             return
+        
         logger.pr_debug(f"successfully fetched room_id {self.room_id} from {self.roomUrl}")
 
     async def access_bili_websocket_html(self):
@@ -125,6 +131,7 @@ class BiliStreamClient():
             "key": self.token
         })
         packet = auth_packet.pack()
+
         return packet
 
     async def heartbeat_packet(self):
@@ -132,16 +139,17 @@ class BiliStreamClient():
         heartbeart_proto.ver = 1
         heartbeart_proto.op = 2
         heartbeart_proto.seq = 1
-        heartbeart_proto.body = '[object Object]'
+        # Heartbeat should be an empty body for this server (header-only packet)
+        heartbeart_proto.body = ''
         packet = heartbeart_proto.pack()
         return packet
     
     async def send_heartbeat(self):
         try:
             while True:
-                logger.pr_debug("Sent heartbeat packet to server")
                 heartbeat_pkt = await self.heartbeat_packet()
                 await self.websocket.send(heartbeat_pkt)
+                logger.pr_debug("Sent heartbeat packet to server")
                 await asyncio.sleep(self.heartbeat_interval)
         except websockets.exceptions.ConnectionClosed:
             logger.pr_debug("send_heartbeat: connection closed, stopping heartbeat task")
@@ -159,7 +167,7 @@ class BiliStreamClient():
             logger.pr_error(f"fetch_and_process_comments: unexpected error: {e}")
 
     async def connect_to_host(self):
-        hostidx = 1
+        hostidx = 0
         auth_packet = await self.build_auth_packet()
         url = f'wss://{self.hosts[hostidx]["host"]}:{self.hosts[hostidx]["wss_port"]}/sub'
 
@@ -180,10 +188,26 @@ class BiliStreamClient():
             await self.reconnect()
             return
 
-        # asyncio.create_task(self.send_heartbeat())
-        await self.websocket.send("heartbeat")
+        # Run receiver and heartbeat concurrently. If either finishes (error/close),
+        # cancel the other and attempt a reconnect.
+        recv_task = asyncio.create_task(self.fetch_and_process_comments())
+        hb_task = asyncio.create_task(self.send_heartbeat())
 
-        await self.fetch_and_process_comments()
+        done, pending = await asyncio.wait([recv_task, hb_task], return_when=asyncio.FIRST_COMPLETED)
+
+        # Cancel any pending task(s)
+        for p in pending:
+            p.cancel()
+
+        # Close websocket if still open
+        try:
+            if self.websocket and not self.websocket.closed:
+                await self.websocket.close()
+        except Exception:
+            pass
+
+        # Attempt reconnect
+        await self.reconnect()
 
     async def reconnect(self):
         await asyncio.sleep(5)  # wait before reconnecting
