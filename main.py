@@ -6,9 +6,7 @@ from log  import logger
 import threading
 from collections import deque
 import asyncio
-import zlib
 import json
-import ssl
 from proto import Proto
 import websockets
 

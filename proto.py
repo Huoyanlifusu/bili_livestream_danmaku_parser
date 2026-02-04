@@ -2,8 +2,6 @@
 # https://github.com/bilibili-openplatform/demo
 
 import struct
-import zlib
-
 
 class Proto:
     def __init__(self):
