@@ -8,6 +8,8 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
 }
 USER_AGENT = headers['User-Agent']
+UID_INIT_URL = 'https://api.bilibili.com/x/web-interface/nav'
+BUVID_INIT_URL = 'https://www.bilibili.com/'
 heartbeat_body = "5b6f626a656374204f626a6563745d"
 myUid = 3056211 # replace with your own Bilibili UID
 rmId = 468200 # represent for bilibili stream room id

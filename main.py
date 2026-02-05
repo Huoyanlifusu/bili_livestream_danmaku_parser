@@ -1,7 +1,9 @@
+from typing import NamedTuple, Union, Optional
 import requests
 from util import baseUrl, webUrl, roomUrl, headers, params, data, myUid
 from util import sleep
 from util import heartbeat_body
+from util import UID_INIT_URL, USER_AGENT, BUVID_INIT_URL
 from node import add_comment, cmd_analyze
 from log  import logger
 import threading
@@ -10,16 +12,31 @@ import asyncio
 import json
 from proto import Proto
 import websockets
-import time
 from key import _WbiSigner
 import weakref
 import aiohttp
+import yarl
+import struct
+import enum
+
+HEADER_STRUCT = struct.Struct('>I2H2I')
 
 class Command():
     def __init__(self, time, uid, text):
         self.uid = uid
         self.time = time
         self.text = text
+
+class HeaderTuple(NamedTuple):
+    pack_len: int
+    raw_header_size: int
+    ver: int
+    operation: int
+    seq_id: int
+
+class Operation(enum.IntEnum):
+    HEARTBEAT = 2
+    AUTH = 7
 
 # https访问弹幕去重
 class Deduper:
@@ -69,16 +86,111 @@ def _get_wbi_signer(session: aiohttp.ClientSession) -> '_WbiSigner':
 class BiliStreamClient():
     def __init__(self):
         self.room_id = 0
-        self.websocket = None
+        self._websocket = None
         self.webUrl = webUrl
-        self.heartbeat_interval = 30  # default heartbeat interval in seconds
+        self._heartbeat_interval = 30  # default heartbeat interval in seconds
+        self.heartbeat_timeout = 10  # default heartbeat timeout in seconds
         self.heartbeat_body = heartbeat_body
         self.token = ""
         self.hosts = []
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
         self._wbi_signer = _get_wbi_signer(self._session)
+        self._uid = None
+        self._heartbeat_timer_handle: Optional[asyncio.TimerHandle] = None
+    
+    async def _init_uid(self):
+        cookies = self._session.cookie_jar.filter_cookies(yarl.URL(UID_INIT_URL))
+        sessdata_cookie = cookies.get('SESSDATA', None)
+        if sessdata_cookie is None or sessdata_cookie.value == '':
+            # cookie都没有，不用请求了
+            self._uid = 0
+            return True
 
+        try:
+            async with self._session.get(
+                UID_INIT_URL,
+                headers={'User-Agent': USER_AGENT},
+            ) as res:
+                if res.status != 200:
+                    logger.warning('room=%d _init_uid() failed, status=%d, reason=%s', self._tmp_room_id,
+                                   res.status, res.reason)
+                    return False
+                data = await res.json()
+                if data['code'] != 0:
+                    if data['code'] == -101:
+                        # 未登录
+                        self._uid = 0
+                        return True
+                    logger.warning('room=%d _init_uid() failed, message=%s', self._tmp_room_id,
+                                   data['message'])
+                    return False
+
+                data = data['data']
+                if not data['isLogin']:
+                    # 未登录
+                    self._uid = 0
+                else:
+                    self._uid = data['mid']
+                return True
+        except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
+            logger.exception('room=%d _init_uid() failed:', self._tmp_room_id)
+            return False
+    
+    def _get_buvid(self):
+        cookies = self._session.cookie_jar.filter_cookies(yarl.URL(BUVID_INIT_URL))
+        buvid_cookie = cookies.get('buvid3', None)
+        if buvid_cookie is None:
+            return ''
+        return buvid_cookie.value
+    
+    async def _init_buvid(self):
+        try:
+            async with self._session.get(
+                BUVID_INIT_URL,
+                headers={'User-Agent': USER_AGENT},
+            ) as res:
+                if res.status != 200:
+                    logger.warning('room=%d _init_buvid() status error, status=%d, reason=%s',
+                                   self._tmp_room_id, res.status, res.reason)
+        except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
+            logger.exception('room=%d _init_buvid() exception:', self._tmp_room_id)
+        return self._get_buvid() != ''
+    
+    @staticmethod
+    def _make_packet(data: Union[dict, str, bytes], operation: int) -> bytes:
+        """
+        创建一个要发送给服务器的包
+
+        :param data: 包体JSON数据
+        :param operation: 操作码，见Operation
+        :return: 整个包的数据
+        """
+        if isinstance(data, dict):
+            body = json.dumps(data).encode('utf-8')
+        elif isinstance(data, str):
+            body = data.encode('utf-8')
+        else:
+            body = data
+        header = HEADER_STRUCT.pack(*HeaderTuple(
+            pack_len=HEADER_STRUCT.size + len(body),
+            raw_header_size=HEADER_STRUCT.size,
+            ver=1,
+            operation=operation,
+            seq_id=1
+        ))
+        return header + body
+
+    
     async def fetch_room_id(self):
+        if self._uid is None:
+            if not await self._init_uid():
+                logger.pr_error('room=%d _init_uid() failed', self.room_id)
+                self._uid = 0
+
+        if self._get_buvid() == '':
+            if not await self._init_buvid():
+                logger.pr_error('room=%d _init_buvid() failed', self.room_id)
+
         try:
             html = requests.get(url=roomUrl, params=params, headers=headers)
         except requests.RequestException as e:
@@ -130,122 +242,131 @@ class BiliStreamClient():
         logger.pr_debug(f"successfully accessed websocket info from {self.webUrl}")
         self.token = html.json().get('data', {}).get('token', '')
         self.hosts = html.json().get('data', {}).get('host_list', [])
-    
-    async def build_auth_packet(self):
-        auth_packet = Proto()
-        auth_packet.ver = 1
-        auth_packet.op = 7
-        auth_packet.seq = 1
-        auth_json = json.dumps({
-            "uid": myUid, 
-            "roomid": self.room_id,
-            "protover": 3,
-            "buvid": "895976D6-ACF1-0AAE-93FD-335D6F10128823063infoc",
-            "support_ack": True,
-            "queue_uuid": "g0myt1hu",
-            "scene": "room",
-            "platform": "web",
-            "type": 2,
-            "key": self.token
-        })
-        auth_packet.body = auth_json
-        # 保存最近一次 auth body 以便日志记录
-        self._last_auth_body = auth_json
-        packet = auth_packet.pack()
-
-        return packet
-
-    async def heartbeat_packet(self):
-        heartbeart_proto = Proto()
-        heartbeart_proto.ver = 1
-        heartbeart_proto.op = 2
-        heartbeart_proto.seq = 1
-        # Heartbeat should be an empty body for this server (header-only packet)
-        heartbeart_proto.body = ''
-        packet = heartbeart_proto.pack()
-        return packet
-    
-    async def send_heartbeat(self):
-        try:
-            while True:
-                await asyncio.sleep(self.heartbeat_interval)
-                if self.websocket is None:
-                    logger.pr_debug("WebSocket is None in send_heartbeat, stopping")
-                    break
-                
-                try:
-                    heartbeat_pkt = await self.heartbeat_packet()
-                    await self.websocket.send(heartbeat_pkt)
-                    logger.pr_debug("Sent heartbeat packet to server")
-                except websockets.exceptions.ConnectionClosed:
-                    logger.pr_debug("send_heartbeat: connection closed, stopping heartbeat task")
-                    break
-                except Exception as e:
-                    logger.pr_error(f"send_heartbeat: unexpected error: {e}")
-        except Exception as e:
-            logger.pr_error(f"send_heartbeat: unexpected error: {e}")
 
     async def _send_heartbeat(self):
-        if self.websocket is None:
-            logger.pr_debug("WebSocket is None in _send_heartbeat")
+        """
+        发送心跳包
+        """
+        print(f"Sending heartbeat to room {self.room_id}")
+        if self._websocket is None or self._websocket.closed:
             return
 
         try:
-            heartbeat_pkt = await self.heartbeat_packet()
-            await self.websocket.send(heartbeat_pkt)
-            logger.pr_debug("Sent heartbeat packet to server")
-        except websockets.exceptions.ConnectionClosed:
-            logger.pr_debug("send_heartbeat: connection closed, stopping heartbeat task")
-        except Exception as e:
-            logger.pr_error(f"send_heartbeat: unexpected error: {e}")
+            await self._websocket.send_bytes(self._make_packet({}, Operation.HEARTBEAT))
+            print(f"Sent heartbeat to room {self.room_id}")
+        except (ConnectionResetError, aiohttp.ClientConnectionError) as e:
+            logger.pr_error('room=%d _send_heartbeat() failed: %r', self.room_id, e)
+        except Exception:  # noqa
+            logger.pr_error('room=%d _send_heartbeat() failed:', self.room_id)
 
-    async def fetch_and_process_comments(self):
+    async def send_heartbeat(self):
+        print(f"Scheduling next heartbeat for room {self.room_id}")
+        if self._websocket is None or self._websocket.closed:
+            print(f"WebSocket is closed, stopping heartbeat for room {self.room_id}")
+            self._heartbeat_timer_handle = None
+            return
+
+        self._heartbeat_timer_handle = asyncio.get_running_loop().call_later(
+            self._heartbeat_interval, self.send_heartbeat
+        )
+        asyncio.create_task(self._send_heartbeat())
+
+    def _get_ws_url(self, retry_count) -> str:
+        """
+        返回WebSocket连接的URL，可以在这里做故障转移和负载均衡
+        """
+        host_server = self.hosts[retry_count % len(self.hosts)]
+        return f"wss://{host_server['host']}:{host_server['wss_port']}/sub"
+
+    async def _on_ws_close(self):
+        """
+        WebSocket连接断开
+        """
+        if self._heartbeat_timer_handle is not None:
+            self._heartbeat_timer_handle.cancel()
+            self._heartbeat_timer_handle = None
+
+    async def on_connect(self):
+        # 构建并发送 auth 包
+        auth_packet = self._make_packet(
+            data = {
+                "uid": myUid,
+                "roomid": self.room_id,
+                "protover": 3,
+                "buvid": self._get_buvid(),
+                "support_ack": True,
+                "queue_uuid": "dlg4u0p5",
+                "scene": "room",
+                "platform": "web",
+                "type": 2,
+                "key": self.token,
+            }, operation=Operation.AUTH)
+        print(f"Auth packet data: {auth_packet}")
+        await self._websocket.send_bytes(auth_packet)
+        print(f"Sent auth packet for room {self.room_id}")
+        # 启动心跳任务
+        self._heartbeat_timer_handle = asyncio.get_running_loop().call_later(
+            self._heartbeat_interval, self.send_heartbeat
+        )
+    
+    async def _on_ws_message(self, message: aiohttp.WSMessage):
+        """
+        收到WebSocket消息
+
+        :param message: WebSocket消息
+        """
+        if message.type != aiohttp.WSMsgType.BINARY:
+            logger.warning('room=%d unknown websocket message type=%s, data=%s', self.room_id,
+                           message.type, message.data)
+            return
+
         try:
-            while True:
-                data = await self.websocket.recv()
-                logger.pr_debug(f"Received WebSocket data: {data}")
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.pr_info(f"fetch_and_process_comments: connection closed: {e}")
-        except Exception as e:
-            logger.pr_error(f"fetch_and_process_comments: unexpected error: {e}")
+            print(f"Received WebSocket message of length {len(message.data)}")
+        except Exception:  # noqa
+            logger.pr_error('room=%d _parse_ws_message() error:', self.room_id)
 
     async def connect_to_host(self):
         # 遍历返回的 host_list，逐个尝试连接并鉴权
+        retry_count = 0
+        total_retry_count = 0
         while True:
-            host = self.hosts[0].get('host')
-            port = self.hosts[0].get('wss_port')
-            url = f'wss://{host}:{port}/sub'
-
             try:
-                self.websocket = await websockets.connect(url)
-                logger.pr_info(f"Connected to WebSocket at {url}")
-                
-                # 构建并发送 auth 包
-                auth_packet = await self.build_auth_packet()
-                await self.websocket.send(auth_packet)
-                logger.pr_debug("Sent authentication packet")
-                
-                # 创建心跳和接收任务
-                hb_task = asyncio.create_task(self.send_heartbeat())
-                recv_task = asyncio.create_task(self.fetch_and_process_comments())
+                async with self._session.ws_connect(
+                    self._get_ws_url(retry_count),
+                    headers={'User-Agent': USER_AGENT},
+                    receive_timeout=self.heartbeat_timeout + 5,
+                ) as websocket: 
+                    self._websocket = websocket
+                    logger.pr_info(f"Connected to WebSocket at {self._get_ws_url(retry_count)}")
 
-                # 等待任意一个任务完成（通常是接收任务因连接关闭）
-                done, pending = await asyncio.wait([hb_task, recv_task], return_when=asyncio.FIRST_COMPLETED)
-                
-                # 取消剩余的任务
-                for task in pending:
-                    task.cancel()
-                
-                logger.pr_info("Connection lost, attempting to reconnect in 5 seconds...")
-                await asyncio.sleep(5)
-                
-            except Exception as e:
-                logger.pr_error(f"Failed to connect to WebSocket URL {url}: {e}")
-                await asyncio.sleep(5)
+                    await self.on_connect()
+                    
+                    message: aiohttp.WSMessage
+                    async for message in websocket:
+                        await self._on_ws_message(message)
+                        # 至少成功处理1条消息
+                        retry_count = 0
 
-    async def reconnect(self):
-        await asyncio.sleep(5)  # wait before reconnecting
-        await self.connect_to_host()
+            except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
+                # 掉线重连
+                print(f"room={self.room_id} connection lost, retrying...")
+                pass
+            finally:
+                self._websocket = None
+                await self._on_ws_close()
+        
+            retry_count += 1
+            total_retry_count += 1
+            logger.pr_info(f"room={self.room_id} is reconnecting, retry_count={retry_count}, total_retry_count={total_retry_count}")
+            await asyncio.sleep(5)
+
+    async def close(self):
+        try:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                logger.pr_debug("Closed aiohttp session")
+        except Exception as e:
+            logger.pr_error(f"Error while closing session: {e}")
 
 def catch_with_https():
     while True:
@@ -278,7 +399,6 @@ def catch_with_https_debug():
 
 async def debug_mode_async():
     bsclient = BiliStreamClient()
-
     await bsclient.fetch_room_id()
     if bsclient.room_id == 0 or bsclient.room_id == -1:
         logger.pr_error("Failed to fetch valid room_id")
@@ -288,9 +408,13 @@ async def debug_mode_async():
     if not bsclient.token or not bsclient.hosts:
         logger.pr_error("Failed to access BiliBili WebSocket info")
         return
-
-    await bsclient.connect_to_host()
-
+    try:
+        await bsclient.connect_to_host()
+    except Exception as e:
+        logger.pr_error(f"Failed to connect to WebSocket: {e}")
+    finally:
+        await bsclient.close()
+    
 def debug_mode():
     try:
         asyncio.run(debug_mode_async())
