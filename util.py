@@ -11,8 +11,6 @@ USER_AGENT = headers['User-Agent']
 UID_INIT_URL = 'https://api.bilibili.com/x/web-interface/nav'
 BUVID_INIT_URL = 'https://www.bilibili.com/'
 
-
-myUid = 3056211 # replace with your own Bilibili UID
 rmId = 468200 # represent for bilibili stream room id
 rmType = 0
 params = {

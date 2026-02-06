@@ -210,7 +210,7 @@ class BiliStreamClient():
         # 构建并发送 auth 包
         auth_packet = self.make_packet(
             data = {
-                "uid": self._uid,
+                "uid": self._uid, # uid 默认为0，否则发鉴权包失败
                 "roomid": self.room_id,
                 "protover": 3,
                 "buvid": self._get_buvid(),
