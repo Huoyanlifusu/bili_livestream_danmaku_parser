@@ -1,4 +1,4 @@
-# copied from bilibili demo https://github.com/bilibili-openplatform/demo
+# copied from bilibili official https://github.com/bilibili-openplatform/demo
 
 import struct
 
@@ -6,9 +6,9 @@ class Proto:
     def __init__(self):
         self.packetLen = 0
         self.headerLen = 16
-        self.ver = 0
+        self.ver = 1
         self.op = 0
-        self.seq = 0
+        self.seq = 1
         self.body = ''
         self.maxBody = 2048
 

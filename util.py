@@ -46,5 +46,3 @@ ytd, mtd = 12 * 31, 31
 hts, mts = 3600, 60
 
 sleepTime = 2
-def sleep():
-    time.sleep(sleepTime)

@@ -1,4 +1,5 @@
-from util import usrCommLimit, keyboardMap, sleep, pressMap
+import asyncio
+from util import usrCommLimit, keyboardMap, pressMap
 from util import ytd, mtd, hts, mts, curyear
 from log import logger
 from heapq import heappush, heappop
@@ -127,4 +128,4 @@ def cmd_analyze():
 
 def cmd_analyze_debug():
     g_kbtoucer.monitor()
-    sleep()
+    asyncio.sleep(2)
