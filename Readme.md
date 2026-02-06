@@ -5,7 +5,11 @@
 `pip install .`
 
 [Application] <br>
-弹幕互动（demo1开发中）、流量统计（待开发demo）
+
++ demo
+    + demo1 --- 客户端弹幕控制服务主机键盘（比如发送'111' - 按下E键）
+
+弹幕互动、流量统计（待开发demo）
 
 [Reference]
 1. https://github.com/xfgryujk/blivedm

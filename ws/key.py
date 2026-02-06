@@ -29,7 +29,7 @@ class _WbiSigner:
         self._last_refresh_time: Optional[datetime.datetime] = None
 
     @property
-    def wbi_key(self):
+    def wbi_key(self) -> str:
         """
         缓存的wbi鉴权口令
         """

@@ -1,7 +1,8 @@
 from log.log import logger
 import asyncio
 from ws.ws import BiliStreamClient
-
+from ws.command import fetch_command_list
+import threading
 ### 弹幕互动，客户端发送弹幕反馈至主机硬件设备
 
 async def debug_mode_async():
@@ -24,12 +25,13 @@ async def debug_mode_async():
     finally:
         await bsclient.close()
 
-def debug_mode():
-    try:
-        asyncio.run(debug_mode_async())
-    except Exception as e:
-        logger.pr_error(f"Error in debug mode: {e}")
-
 if __name__ == "__main__":
-    # websocket protocol
-    debug_mode()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(asyncio.gather(debug_mode_async(), fetch_command_list()))
+    finally:
+        loop.close()

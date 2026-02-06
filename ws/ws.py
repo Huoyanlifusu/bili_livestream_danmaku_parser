@@ -5,6 +5,7 @@ from ws.key import _WbiSigner
 from ws.proto import Proto
 from ws.danmaku_parser import parse_ws_stream, extract_comment_info, Operation
 from ws.util import HEADERS, USER_AGENT
+from ws.command import filter, push_next_command
 #### web socket in debugging temporarily ####
 
 WEB_URL = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
@@ -251,8 +252,11 @@ class BiliStreamClient():
             if message and isinstance(message, dict):
                 comment = await extract_comment_info(message)
                 if comment:
-                    logger.pr_info(f"评论: {comment['nickname']}: {comment['text']}")
+                    text = comment['text']
+                    logger.pr_info(f"评论: {comment['nickname']}: {text}")
                     # 可以在这里调用其他处理函数
+                    if filter(text):
+                        push_next_command(text)
                 else:
                     # 不是评论消息，可能是其他类型（LIVE、SUPER_CHAT 等）
                     cmd = message.get('cmd', 'UNKNOWN')
