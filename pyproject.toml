@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bili_livestream_danmaku_parser"
+version = "0.0.1"
+authors = [
+  { name="Zhang Yuyang", email="zhangyuyang821@163.com" },
+]
+description = "基于Web Socket/https通信，发包至Bilibili直播间，抓取直播弹幕信息"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "aiohttp~=3.13.3",
+    "Brotli~=1.2.0",
+    "yarl~=1.22.0",
+    "keyboard~=0.13.5",
+    "requests~=2.32.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/Huoyanlifusu/bili_livestream_danmaku_parser"
+Issues = "https://github.com/Huoyanlifusu/bili_livestream_danmaku_parser/issues"
+

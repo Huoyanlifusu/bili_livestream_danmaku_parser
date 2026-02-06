@@ -1,11 +1,23 @@
 import requests
-from util import baseUrl, headers, data
-from node import add_comment, cmd_analyze
-from log  import logger
-import threading
+from log.log import logger
 from collections import deque
+import threading
 import asyncio
-from ws.ws import BiliStreamClient
+from https.node import add_comment
+
+baseUrl = "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory"
+
+headers = {
+    'Host': 'api.live.bilibili.com',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
+}
+
+rmId = 468200 # represent for bilibili stream room id
+rmType = 0
+data = {
+    'roomid': rmId,
+    "room_type": rmType
+}
 
 class Command():
     def __init__(self, time, uid, text):
@@ -79,43 +91,3 @@ def catch_with_https_debug():
         add_comment(cmd)
 
     asyncio.sleep(2)
-
-async def debug_mode_async():
-    bsclient = BiliStreamClient()
-    await bsclient.fetch_room_id()
-    if bsclient.room_id == 0 or bsclient.room_id == -1:
-        logger.pr_error("Failed to fetch valid room_id")
-        return
-
-    await bsclient.access_bili_websocket_html()
-    if not bsclient.token or not bsclient.hosts:
-        logger.pr_error("Failed to access BiliBili WebSocket info")
-        return
-    try:
-        await bsclient.connect_to_host()
-    except Exception as e:
-        logger.pr_error(f"Failed to connect to WebSocket: {e}")
-    finally:
-        await bsclient.close()
-    
-def debug_mode():
-    try:
-        asyncio.run(debug_mode_async())
-    except Exception as e:
-        logger.pr_error(f"Error in debug mode: {e}")
-
-if __name__ == "__main__":
-
-    if 0:
-        # https protocol
-        thread_c = threading.Thread(target=catch_with_https, daemon=True)
-        thread_m = threading.Thread(target=cmd_analyze, daemon=True)
-
-        thread_c.start()
-        thread_m.start()
-
-        thread_c.join()
-        thread_m.join()
-
-    # websocket protocol
-    debug_mode()

@@ -1,11 +1,23 @@
-from typing import Union, NamedTuple
-from util import webUrl, UID_INIT_URL, USER_AGENT, BUVID_INIT_URL, roomUrl, params, headers
-import aiohttp, asyncio, yarl, weakref, struct, json, enum, requests
-from log import logger
+from typing import Union
+import aiohttp, asyncio, yarl, weakref, json, requests
+from log.log import logger
 from ws.key import _WbiSigner
 from ws.proto import Proto
 from ws.danmaku_parser import parse_ws_stream, extract_comment_info, Operation
+from ws.util import HEADERS, USER_AGENT
 #### web socket in debugging temporarily ####
+
+WEB_URL = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
+UID_INIT_URL = "https://api.bilibili.com/x/web-interface/nav"
+BUVID_INIT_URL = "https://www.bilibili.com/"
+ROOM_URL = "https://api.live.bilibili.com/room/v1/Room/get_info"
+rmId = 468200 # represent for bilibili stream room id
+rmType = 0
+params = {
+    'id': rmId,
+    "type": rmType
+}
+
 
 _session_to_wbi_signer = weakref.WeakKeyDictionary()
 def _get_wbi_signer(session: aiohttp.ClientSession) -> '_WbiSigner':
@@ -15,8 +27,8 @@ def _get_wbi_signer(session: aiohttp.ClientSession) -> '_WbiSigner':
     return wbi_signer
 
 class BiliStreamClient():
-    def __init__(self):
-        self.room_id = 0
+    def __init__(self, room_id=0):
+        self.room_id = room_id
         self._websocket = None
         self._heartbeat_interval = 30  # default heartbeat interval in seconds
         self.receive_timeout = 1000  # default receive timeout in seconds
@@ -112,25 +124,25 @@ class BiliStreamClient():
                 logger.pr_error('room=%d _init_buvid() failed', self.room_id)
 
         try:
-            html = requests.get(url=roomUrl, params=params, headers=headers)
+            html = requests.get(url=ROOM_URL, params=params, headers=HEADERS)
         except requests.RequestException as e:
-            logger.pr_error(f"HTTP request exception towards {roomUrl}: {e}")
+            logger.pr_error(f"HTTP request exception towards {ROOM_URL}: {e}")
             return
         
         if html.status_code != 200:
-            logger.pr_error(f"HTTP request failed towards {roomUrl} with status code {html.status_code}")
+            logger.pr_error(f"HTTP request failed towards {ROOM_URL} with status code {html.status_code}")
             return
         
         if html.json().get('data', -1) == {}:
-            logger.pr_error(f"API returned empty data from {roomUrl}")
+            logger.pr_error(f"API returned empty data from {ROOM_URL}")
             return
         
         self.room_id = html.json().get('data', {}).get('room_id', -1)
         if self.room_id == -1:
-            logger.pr_error(f"Failed to fetch room_id from {roomUrl}")
+            logger.pr_error(f"Failed to fetch room_id from {ROOM_URL}")
             return
         
-        logger.pr_debug(f"successfully fetched room_id {self.room_id} from {roomUrl}")
+        logger.pr_debug(f"successfully fetched room_id {self.room_id} from {ROOM_URL}")
 
     async def access_bili_websocket_html(self):
         if self._wbi_signer.need_refresh_wbi_key:
@@ -145,21 +157,21 @@ class BiliStreamClient():
             'web_location': "444.8"
         })
         try:
-            html = requests.get(url=webUrl, params=params, headers=headers)
+            html = requests.get(url=WEB_URL, params=params, headers=HEADERS)
         except requests.RequestException as e:
-            logger.pr_error(f"HTTP request exception towards {webUrl}: {e}")
+            logger.pr_error(f"HTTP request exception towards {WEB_URL}: {e}")
             return
 
         if html.status_code != 200:
-            logger.pr_error(f"HTTP request failed towards {webUrl} with status code {html.status_code}")
+            logger.pr_error(f"HTTP request failed towards {WEB_URL} with status code {html.status_code}")
             return
 
         if html.json().get('code', -1) != 0:
-            logger.pr_error(f"API returned error code {html.json().get('code', -1)} from {webUrl}")
+            logger.pr_error(f"API returned error code {html.json().get('code', -1)} from {WEB_URL}")
             logger.pr_error(f"Possible reasons for err code -352: invalid parameters or access restrictions.")
             return
 
-        logger.pr_debug(f"successfully accessed websocket info from {webUrl}")
+        logger.pr_debug(f"successfully accessed websocket info from {WEB_URL}")
         self.token = html.json().get('data', {}).get('token', '')
         self.hosts = html.json().get('data', {}).get('host_list', [])
 

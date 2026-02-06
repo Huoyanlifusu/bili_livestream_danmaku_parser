@@ -2,14 +2,13 @@
 Bilibili WebSocket Danmaku (弹幕) Parser
 解析 WebSocket 二进制弹幕数据包，提取评论信息
 """
-import asyncio
 import struct
 import json
 import brotli
 import zlib
 from typing import NamedTuple, Tuple, Optional, Dict, Any
 from enum import IntEnum
-from log import logger
+from log.log import logger
 # Header 定义
 HEADER_STRUCT = struct.Struct('>I2H2I')
 

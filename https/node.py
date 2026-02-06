@@ -1,11 +1,33 @@
 import asyncio
-from util import usrCommLimit, keyboardMap, pressMap
-from util import ytd, mtd, hts, mts, curyear
-from log import logger
+from log.log import logger
 from heapq import heappush, heappop
 from collections import defaultdict
 import keyboard
 import re
+
+usrCommLimit = 10
+
+keyboardMap = {
+    '111': 'e',
+    '222': 'shift',
+    '333': 'r',
+    '444': 'q',
+    '555': 'x',
+    '666': 'c',
+}
+
+pressMap = {
+    'e': 0,
+    'shift': 0,
+    'r': 0,
+    'q': 0,
+    'x': 0,
+}
+
+curyear = 2026
+ytd, mtd = 12 * 31, 31
+hts, mts = 3600, 60
+
 
 def singleton(cls):
     instances = {}

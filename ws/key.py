@@ -6,8 +6,8 @@ import urllib.parse
 import aiohttp
 from typing import Optional, Awaitable
 import asyncio
-import util
-from log import logger
+from ws.util import USER_AGENT
+from log.log import logger
 
 WBI_INIT_URL = 'https://api.bilibili.com/x/web-interface/nav'
 
@@ -68,7 +68,7 @@ class _WbiSigner:
         try:
             async with self._session.get(
                 WBI_INIT_URL,
-                headers={'User-Agent': util.USER_AGENT},
+                headers={'User-Agent': USER_AGENT},
             ) as res:
                 if res.status != 200:
                     logger.pr_error('WbiSigner failed to get wbi key: status=%d %s', res.status, res.reason)
