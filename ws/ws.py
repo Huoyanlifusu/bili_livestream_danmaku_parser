@@ -1,24 +1,11 @@
-from typing import Optional, Union, NamedTuple
-from util import webUrl, heartbeat_body, UID_INIT_URL, USER_AGENT, BUVID_INIT_URL, roomUrl, params, headers
+from typing import Union, NamedTuple
+from util import webUrl, UID_INIT_URL, USER_AGENT, BUVID_INIT_URL, roomUrl, params, headers
 import aiohttp, asyncio, yarl, weakref, struct, json, enum, requests
 from log import logger
 from ws.key import _WbiSigner
 from ws.proto import Proto
-
+from ws.danmaku_parser import parse_ws_stream, extract_comment_info, Operation
 #### web socket in debugging temporarily ####
-
-HEADER_STRUCT = struct.Struct('>I2H2I')
-
-class HeaderTuple(NamedTuple):
-    pack_len: int
-    raw_header_size: int
-    ver: int
-    operation: int
-    seq_id: int
-
-class Operation(enum.IntEnum):
-    HEARTBEAT = 2
-    AUTH = 7
 
 _session_to_wbi_signer = weakref.WeakKeyDictionary()
 def _get_wbi_signer(session: aiohttp.ClientSession) -> '_WbiSigner':
@@ -31,16 +18,13 @@ class BiliStreamClient():
     def __init__(self):
         self.room_id = 0
         self._websocket = None
-        self.webUrl = webUrl
         self._heartbeat_interval = 30  # default heartbeat interval in seconds
-        self.heartbeat_timeout = 10  # default heartbeat timeout in seconds
-        self.heartbeat_body = heartbeat_body
+        self.receive_timeout = 1000  # default receive timeout in seconds
         self.token = ""
         self.hosts = []
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
         self._wbi_signer = _get_wbi_signer(self._session)
         self._uid = None
-        self._heartbeat_timer_handle: Optional[asyncio.TimerHandle] = None
     
     async def _init_uid(self):
         cookies = self._session.cookie_jar.filter_cookies(yarl.URL(UID_INIT_URL))
@@ -161,21 +145,21 @@ class BiliStreamClient():
             'web_location': "444.8"
         })
         try:
-            html = requests.get(url=self.webUrl, params=params, headers=headers)
+            html = requests.get(url=webUrl, params=params, headers=headers)
         except requests.RequestException as e:
-            logger.pr_error(f"HTTP request exception towards {self.webUrl}: {e}")
+            logger.pr_error(f"HTTP request exception towards {webUrl}: {e}")
             return
 
         if html.status_code != 200:
-            logger.pr_error(f"HTTP request failed towards {self.webUrl} with status code {html.status_code}")
+            logger.pr_error(f"HTTP request failed towards {webUrl} with status code {html.status_code}")
             return
 
         if html.json().get('code', -1) != 0:
-            logger.pr_error(f"API returned error code {html.json().get('code', -1)} from {self.webUrl}")
+            logger.pr_error(f"API returned error code {html.json().get('code', -1)} from {webUrl}")
             logger.pr_error(f"Possible reasons for err code -352: invalid parameters or access restrictions.")
             return
 
-        logger.pr_debug(f"successfully accessed websocket info from {self.webUrl}")
+        logger.pr_debug(f"successfully accessed websocket info from {webUrl}")
         self.token = html.json().get('data', {}).get('token', '')
         self.hosts = html.json().get('data', {}).get('host_list', [])
 
@@ -203,9 +187,8 @@ class BiliStreamClient():
     async def send_heartbeat(self):
         if self._websocket is None or self._websocket.closed:
             logger.pr_error(f"WebSocket is closed, stopping heartbeat for room {self.room_id}")
-            self._heartbeat_timer_handle = None
             return
-        print(f"Prepare to send heartbeat to room {self.room_id}")
+        logger.pr_debug(f"Prepare to send heartbeat to room {self.room_id}")
         hb_task = asyncio.create_task(self._send_heartbeat())
 
         await hb_task
@@ -221,9 +204,7 @@ class BiliStreamClient():
         """
         WebSocket连接断开
         """
-        if self._heartbeat_timer_handle is not None:
-            self._heartbeat_timer_handle.cancel()
-            self._heartbeat_timer_handle = None
+        return
 
     async def on_connect(self):
         # 构建并发送 auth 包
@@ -240,12 +221,30 @@ class BiliStreamClient():
                 "type": 2,
                 "key": self.token  # 使用从API获取的token
             }, operation=Operation.AUTH)
-        print(f"Auth packet data: {auth_packet}")
         await self._websocket.send_bytes(auth_packet)
-        print(f"Sent auth packet for room {self.room_id}")
+        logger.pr_debug(f"Sent auth packet for room {self.room_id}")
         # 启动心跳任务
         asyncio.create_task(self.send_heartbeat())
+
+    async def _parse_ws_message(self, data: bytes):
+        messages, errors = await parse_ws_stream(data)
         
+        # 如果有错误，记录但继续处理成功的消息
+        if errors:
+            for err in errors:
+                logger.pr_debug(f"Parse error at offset {err['offset']}: {err['error']}")
+        
+        # 处理成功解析的消息
+        for message in messages:
+            if message and isinstance(message, dict):
+                comment = await extract_comment_info(message)
+                if comment:
+                    logger.pr_info(f"评论: {comment['nickname']}: {comment['text']}")
+                    # 可以在这里调用其他处理函数
+                else:
+                    # 不是评论消息，可能是其他类型（LIVE、SUPER_CHAT 等）
+                    cmd = message.get('cmd', 'UNKNOWN')
+                    logger.pr_debug(f"Received {cmd} message")
     
     async def _on_ws_message(self, message: aiohttp.WSMessage):
         """
@@ -259,8 +258,8 @@ class BiliStreamClient():
             return
 
         try:
-            print(f"Received WebSocket message of length {len(message.data)}")
-        except Exception as e:  # noqa
+            await self._parse_ws_message(message.data)
+        except Exception as e:
             logger.pr_error(f'room={self.room_id} _parse_ws_message() error: {e}')
 
     async def connect_to_host(self):
@@ -272,7 +271,7 @@ class BiliStreamClient():
                 async with self._session.ws_connect(
                     self._get_ws_url(retry_count),
                     headers={'User-Agent': USER_AGENT},
-                    receive_timeout=self.heartbeat_timeout + 5,
+                    receive_timeout=self.receive_timeout,
                 ) as websocket: 
                     self._websocket = websocket
                     logger.pr_info(f"Connected to WebSocket at {self._get_ws_url(retry_count)}")
@@ -287,7 +286,7 @@ class BiliStreamClient():
 
             except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
                 # 掉线重连
-                print(f"room={self.room_id} connection lost, retrying...")
+                logger.pr_error(f"room={self.room_id} connection lost, retrying...")
                 pass
             finally:
                 self._websocket = None

@@ -10,7 +10,8 @@ headers = {
 USER_AGENT = headers['User-Agent']
 UID_INIT_URL = 'https://api.bilibili.com/x/web-interface/nav'
 BUVID_INIT_URL = 'https://www.bilibili.com/'
-heartbeat_body = "5b6f626a656374204f626a6563745d"
+
+
 myUid = 3056211 # replace with your own Bilibili UID
 rmId = 468200 # represent for bilibili stream room id
 rmType = 0
@@ -22,6 +23,7 @@ data = {
     'roomid': rmId,
     "room_type": rmType
 }
+
 usrCommLimit = 10
 
 keyboardMap = {
@@ -44,5 +46,3 @@ pressMap = {
 curyear = 2026
 ytd, mtd = 12 * 31, 31
 hts, mts = 3600, 60
-
-sleepTime = 2
